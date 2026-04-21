@@ -4,8 +4,8 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
 
 ## Commands
 
-- `/generate-commit-message`
-- `/generate-commit-message-settings`
+- `/commit-msg`
+- `/commit-msg:settings`
 
 ## Features
 
@@ -44,7 +44,7 @@ Default settings:
 }
 ```
 
-If no model is configured, `/generate-commit-message` will ask you to configure one through `/generate-commit-message-settings`.
+If no model is configured, `/commit-msg` will ask you to configure one through `/commit-msg:settings`.
 
 ## Local development
 

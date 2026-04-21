@@ -57,7 +57,7 @@ type ToolExecutionResult = {
 };
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("generate-commit-message", {
+	pi.registerCommand("commit-msg", {
 		description: "Generate a commit message using the configured model and copy it to clipboard",
 		handler: async (_args, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify("Preparing commit message generation...", "info");
@@ -66,7 +66,7 @@ export default function (pi: ExtensionAPI) {
 			const model = resolveConfiguredModel(ctx, settings);
 			if (!model) {
 				if (ctx.hasUI) {
-					ctx.ui.notify("No model configured. Run /generate-commit-message-settings and choose a model.", "warning");
+					ctx.ui.notify("No model configured. Run /commit-msg:settings and choose a model.", "warning");
 				}
 				return;
 			}
@@ -373,8 +373,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("generate-commit-message-settings", {
-		description: "Configure model and preview settings for /generate-commit-message",
+	pi.registerCommand("commit-msg:settings", {
+		description: "Configure model and preview settings for /commit-msg",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 
