@@ -4,10 +4,11 @@ import { Type } from "@sinclair/typebox";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { exec as execCb } from "child_process";
+import { exec as execCb, execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 
-const exec = promisify(execCb as any);
+const execShell = promisify(execCb as any);
+const execFile = promisify(execFileCb as any);
 const LOCAL_PROMPT = path.join(__dirname, "commit-message-generator.prompt.md");
 const SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "data", "generate-commit-message", "settings.json");
 const DIFF_TRUNCATE_LIMIT = 400000;
@@ -109,7 +110,8 @@ export default function (pi: ExtensionAPI) {
 			const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-commit-"));
 			const tmpDiffPath = path.join(tmpdir, "staged-diff.txt");
 			try {
-				await exec(`git -C "${workdir}" diff --cached --unified=0 > "${tmpDiffPath}" || true`);
+				const diffOutput = await execGit(workdir, ["diff", "--cached", "--unified=0"]);
+				await fs.writeFile(tmpDiffPath, diffOutput, { encoding: "utf8" });
 			} catch (_) {
 				await fs.writeFile(tmpDiffPath, "", { encoding: "utf8" });
 			}
@@ -732,11 +734,17 @@ async function loadPrompt(ctx: any): Promise<string | null> {
 	return null;
 }
 
+async function execGit(workdir: string | null, args: string[]): Promise<string> {
+	const fullArgs = workdir ? ["-C", workdir, ...args] : args;
+	const result = await execFile("git", fullArgs, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+	return String(result.stdout ?? "");
+}
+
 async function getSubmodules(): Promise<string[]> {
 	try {
-		const res = await exec("git config -f .gitmodules --get-regexp path || true");
+		const stdout = await execGit(null, ["config", "-f", ".gitmodules", "--get-regexp", "path"]);
 		const out: string[] = [];
-		for (const line of String(res.stdout).split(/\r?\n/)) {
+		for (const line of stdout.split(/\r?\n/)) {
 			if (!line.trim()) continue;
 			const parts = line.split(/\s+/);
 			if (parts.length >= 2) out.push(parts[1]);
@@ -749,7 +757,7 @@ async function getSubmodules(): Promise<string[]> {
 
 async function isGitRepo(workdir: string): Promise<boolean> {
 	try {
-		await exec(`git -C "${workdir}" rev-parse --is-inside-work-tree`);
+		await execGit(workdir, ["rev-parse", "--is-inside-work-tree"]);
 		return true;
 	} catch (_) {
 		return false;
@@ -757,14 +765,17 @@ async function isGitRepo(workdir: string): Promise<boolean> {
 }
 
 async function getStagedNames(workdir: string): Promise<string> {
-	const names = await exec(`git -C "${workdir}" diff --cached --name-status || true`);
-	return String(names.stdout).trim();
+	try {
+		return (await execGit(workdir, ["diff", "--cached", "--name-status"])).trim();
+	} catch (_) {
+		return "";
+	}
 }
 
 async function getChangedReadableFiles(workdir: string): Promise<string[]> {
 	try {
-		const result = await exec(`git -C "${workdir}" diff --cached --name-only --diff-filter=ACMR || true`);
-		const files = String(result.stdout)
+		const stdout = await execGit(workdir, ["diff", "--cached", "--name-only", "--diff-filter=ACMR"]);
+		const files = stdout
 			.split(/\r?\n/)
 			.map((s) => s.trim())
 			.filter(Boolean);
@@ -1044,18 +1055,18 @@ async function copyToClipboard(text: string, ctx: any, pi: ExtensionAPI) {
 	const unixEscape = (p: string) => `'${p.replace(/'/g, `\\'`)}'`;
 	try {
 		if (process.platform === "darwin") {
-			await exec(`pbcopy < ${unixEscape(tmpPath)}`);
+			await execShell(`pbcopy < ${unixEscape(tmpPath)}`);
 		} else if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
 			try {
-				await exec(`wl-copy < ${unixEscape(tmpPath)}`);
+				await execShell(`wl-copy < ${unixEscape(tmpPath)}`);
 			} catch (_) {
-				await exec(`xclip -selection clipboard < ${unixEscape(tmpPath)}`);
+				await execShell(`xclip -selection clipboard < ${unixEscape(tmpPath)}`);
 			}
 		} else if (process.platform === "win32") {
 			const winCmd = `powershell -NoProfile -Command "Get-Content -Raw -Path ${JSON.stringify(tmpPath)} | Set-Clipboard"`;
-			await exec(winCmd);
+			await execShell(winCmd);
 		} else {
-			await exec(`xclip -selection clipboard < ${unixEscape(tmpPath)}`);
+			await execShell(`xclip -selection clipboard < ${unixEscape(tmpPath)}`);
 		}
 		await safeRm(tmpPath);
 		return;
