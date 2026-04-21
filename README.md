@@ -75,12 +75,16 @@ Then reload pi:
 /reload
 ```
 
+## Repository
+
+GitHub: https://github.com/dimixar/pi-generate-commit-message
+
 ## Git install
 
-After pushing this repo to GitHub, install it with:
+Install directly from GitHub with:
 
 ```bash
-pi install git:github.com/<USER>/<REPO>
+pi install git:github.com/dimixar/pi-generate-commit-message
 ```
 
 ## npm install
