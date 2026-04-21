@@ -179,17 +179,14 @@ export default function (pi: ExtensionAPI) {
 					const targetLabel = chosenSubmodule ? `Submodule: ${chosenSubmodule}` : `Repository: ${path.basename(process.cwd())}`;
 					const modelLabel = formatModelRef(model);
 					const liveSettings: CommitMessageSettings = { ...settings };
+					let appliedRunSettings: CommitMessageSettings = { ...settings };
 					let spinnerIdx = 0;
 					const spinner = ["-", "\\", "|", "/"];
 
-					const getEffectiveThinkingLabel = () => {
-						const effective = getReasoningEffortForModel(model, liveSettings.thinkingLevel) ?? "off";
-						if (effective === liveSettings.thinkingLevel) return effective;
-						if (!model?.reasoning) return `${liveSettings.thinkingLevel} → off (model has no reasoning)`;
-						return `${liveSettings.thinkingLevel} → ${effective}`;
-					};
-
-					const getRepoToolsLabel = () => liveSettings.useRepoTools ? "enabled" : "disabled";
+					const getThinkingLabelFor = (value: CommitMessageSettings) => formatThinkingLevelForDisplay(model, value.thinkingLevel);
+					const getRepoToolsLabelFor = (value: CommitMessageSettings) => value.useRepoTools ? "enabled" : "disabled";
+					const hasPendingRunSettingsChanges = () =>
+						liveSettings.thinkingLevel !== appliedRunSettings.thinkingLevel || liveSettings.useRepoTools !== appliedRunSettings.useRepoTools;
 
 					const resetForRun = () => {
 						thinkingText = "";
@@ -203,6 +200,7 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const rerunWithCurrentSettings = async (statusMessage?: string) => {
+						appliedRunSettings = { ...liveSettings };
 						try { controller?.abort(); } catch (_) {}
 						resetForRun();
 						if (statusMessage && ctx.hasUI) ctx.ui.notify(statusMessage, "info");
@@ -213,11 +211,11 @@ export default function (pi: ExtensionAPI) {
 						try {
 							const result = await runToolAwareLoop({
 								model,
-								messages: buildMessagesForRun(liveSettings, clarificationHistory),
-								tools: getToolsForRun(liveSettings),
+								messages: buildMessagesForRun(appliedRunSettings, clarificationHistory),
+								tools: getToolsForRun(appliedRunSettings),
 								apiKey: auth.apiKey,
 								headers: auth.headers,
-								reasoningEffort: getReasoningEffortForModel(model, liveSettings.thinkingLevel),
+								reasoningEffort: getReasoningEffortForModel(model, appliedRunSettings.thinkingLevel),
 								signal: controller.signal,
 								workdir,
 								onEvent: (event) => {
@@ -269,8 +267,8 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Text(theme.fg("accent", theme.bold("Commit message preview")), 1, 0));
 
 							addSectionTitle("Context");
-							const thinkingLabel = getEffectiveThinkingLabel();
-							const repoToolsLabel = getRepoToolsLabel();
+							const thinkingLabel = getThinkingLabelFor(appliedRunSettings);
+							const repoToolsLabel = getRepoToolsLabelFor(appliedRunSettings);
 							let headerMd = `**Target:** ${escapeMarkdown(targetLabel)}\n\n**Model:** ${escapeMarkdown(modelLabel)}\n\n**Thinking level:** ${escapeMarkdown(thinkingLabel)}\n\n**Repo tools:** ${escapeMarkdown(repoToolsLabel)}\n\n**Staged files:**\n${escapeMarkdown(stagedNames)}`;
 							if (initialClarification) headerMd += `\n\n**Initial clarification:**\n${escapeMarkdown(initialClarification)}`;
 							if (truncated) headerMd += `\n\n_Note: diff was truncated for model input._`;
@@ -293,12 +291,15 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Text("", 1, 0));
 							}
 
-							const controlsLine = `Shift+Tab thinking: ${getEffectiveThinkingLabel()} • Ctrl+Y repo tools: ${getRepoToolsLabel()}`;
+							const controlsLine = `Shift+Tab thinking: ${getThinkingLabelFor(liveSettings)} • Ctrl+Y repo tools: ${getRepoToolsLabelFor(liveSettings)} • Ctrl+R retry`;
 
 							if (mode === "streaming") {
 								addSectionTitle("Current output");
 								container.addChild(new Text(theme.fg("muted", `Generating ${spinner[spinnerIdx]}`), 1, 0));
 								if (outputText) container.addChild(new Markdown(escapeMarkdown(outputText), 1, 1, mdTheme));
+								if (hasPendingRunSettingsChanges()) {
+									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
+								}
 								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter/Esc close"), 1, 0));
 							} else if (mode === "clarify") {
@@ -307,12 +308,18 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Text("", 1, 0));
 								container.addChild(new Text(theme.fg("accent", "Your clarification:"), 1, 0));
 								container.addChild(new Text(clarificationInput || theme.fg("dim", "Type here..."), 1, 0));
+								if (hasPendingRunSettingsChanges()) {
+									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
+								}
 								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter submit • Backspace edit • Esc cancel/close"), 1, 0));
 							} else if (mode === "error") {
 								addSectionTitle("Error");
 								container.addChild(new Text(theme.fg("error", "Model request failed:"), 1, 0));
 								container.addChild(new Text(errorMsg || "Unknown error", 1, 0));
+								if (hasPendingRunSettingsChanges()) {
+									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
+								}
 								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter/Esc close"), 1, 0));
 							} else {
@@ -320,6 +327,9 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Markdown(outputText ? escapeMarkdown(outputText) : "(no output)", 1, 1, mdTheme));
 								container.addChild(new Text("", 1, 0));
 								if (copiedNotice) container.addChild(new Text(theme.fg("success", "Copied to clipboard"), 1, 0));
+								if (hasPendingRunSettingsChanges()) {
+									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
+								}
 								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "c copy • Enter/Esc close"), 1, 0));
 							}
@@ -333,13 +343,19 @@ export default function (pi: ExtensionAPI) {
 								if (matchesKey(data, "shift+tab")) {
 									liveSettings.thinkingLevel = cycleThinkingLevel(liveSettings.thinkingLevel);
 									await saveSettings(liveSettings);
-									await rerunWithCurrentSettings(`Thinking level: ${getEffectiveThinkingLabel()}`);
+									if (ctx.hasUI) ctx.ui.notify(`Thinking level set to ${getThinkingLabelFor(liveSettings)}. Press Ctrl+R to retry.`, "info");
+									tui.requestRender?.();
 									return;
 								}
 								if (matchesKey(data, "ctrl+y")) {
 									liveSettings.useRepoTools = !liveSettings.useRepoTools;
 									await saveSettings(liveSettings);
-									await rerunWithCurrentSettings(`Repo tools ${liveSettings.useRepoTools ? "enabled" : "disabled"}`);
+									if (ctx.hasUI) ctx.ui.notify(`Repo tools ${liveSettings.useRepoTools ? "enabled" : "disabled"}. Press Ctrl+R to retry.`, "info");
+									tui.requestRender?.();
+									return;
+								}
+								if (matchesKey(data, "ctrl+r")) {
+									await rerunWithCurrentSettings("Retrying with current settings");
 									return;
 								}
 

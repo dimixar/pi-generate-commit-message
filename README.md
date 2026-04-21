@@ -26,6 +26,7 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
 - Runtime controls before and during generation:
   - `Shift+Tab` cycles the thinking level and saves it
   - `Ctrl+Y` toggles repo tools and saves it
+  - `Ctrl+R` retries generation in the preview and applies the latest saved run settings
   - These controls are available in repo selection (when applicable), optional context entry, and the preview itself
 - Copies the final message to the clipboard
 
