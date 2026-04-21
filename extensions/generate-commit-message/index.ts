@@ -72,8 +72,6 @@ export default function (pi: ExtensionAPI) {
 				}
 				return;
 			}
-			const reasoningEffort = getReasoningEffortForModel(model, settings.thinkingLevel);
-
 			const promptText = await loadPrompt(ctx);
 			if (!promptText) return;
 
@@ -81,7 +79,7 @@ export default function (pi: ExtensionAPI) {
 			let workdir = process.cwd();
 			let chosenSubmodule: string | null = null;
 			if (submodules.length > 0 && ctx.hasUI) {
-				const choice = await ctx.ui.select("Generate commit message for:", ["(current repo)", ...submodules]);
+				const choice = await promptForCommitTarget(ctx, model, settings, submodules);
 				if (!choice) return;
 				if (choice !== "(current repo)") {
 					chosenSubmodule = choice;
@@ -99,13 +97,14 @@ export default function (pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify("No staged changes. Stage changes first.", "warning");
 				return;
 			}
-			const changedReadableFiles = settings.useRepoTools ? await getChangedReadableFiles(workdir) : [];
 
 			let initialClarification = "";
 			if (ctx.hasUI) {
-				const clar = await ctx.ui.input("Optional: provide a brief reason/why for this change (press Enter to skip):");
+				const clar = await promptForInitialClarification(ctx, model, settings, chosenSubmodule ? `Submodule: ${chosenSubmodule}` : `Repository: ${path.basename(process.cwd())}`);
+				if (clar === null) return;
 				if (clar && typeof clar === "string") initialClarification = clar.trim();
 			}
+			const changedReadableFiles = await getChangedReadableFiles(workdir);
 
 			const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-commit-"));
 			const tmpDiffPath = path.join(tmpdir, "staged-diff.txt");
@@ -128,10 +127,27 @@ export default function (pi: ExtensionAPI) {
 				truncated = true;
 			}
 
-			const promptHeader = `${promptText}\n\n---\nSTAGED FILES:\n${stagedNames}\n\n---\n(Attached file: staged diff)\n`;
-			let promptFinal = promptHeader;
-			promptFinal += buildRunSpecificInstructions(settings.useRepoTools, changedReadableFiles);
-			if (initialClarification) promptFinal += `\nUSER CLARIFICATION:\n${initialClarification}\n\n`;
+			const buildMessagesForRun = (runSettings: CommitMessageSettings, clarificationHistory: string[] = []) => {
+				const promptHeader = `${promptText}\n\n---\nSTAGED FILES:\n${stagedNames}\n\n---\n(Attached file: staged diff)\n`;
+				let promptFinal = promptHeader;
+				promptFinal += buildRunSpecificInstructions(runSettings.useRepoTools, changedReadableFiles);
+				if (initialClarification) promptFinal += `\nUSER CLARIFICATION:\n${initialClarification}\n\n`;
+				const messages = [
+					{ role: "user" as const, content: [{ type: "text" as const, text: promptFinal }], timestamp: Date.now() },
+					{ role: "user" as const, content: [{ type: "text" as const, text: `<diff>\n${diffContent}\n</diff>` }], timestamp: Date.now() },
+				];
+				if (truncated) {
+					messages.push({ role: "user" as const, content: [{ type: "text" as const, text: `NOTE: The diff was truncated to ${DIFF_TRUNCATE_LIMIT} characters due to context limits.` }], timestamp: Date.now() });
+				}
+				for (const clarification of clarificationHistory) {
+					messages.push({
+						role: "user" as const,
+						content: [{ type: "text" as const, text: `USER CLARIFICATION:\n${clarification}` }],
+						timestamp: Date.now(),
+					});
+				}
+				return messages;
+			};
 
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth?.ok || !auth.apiKey) {
@@ -140,14 +156,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const tools = settings.useRepoTools ? createReadOnlyTools() : [];
-			const baseMessages = [
-				{ role: "user" as const, content: [{ type: "text" as const, text: promptFinal }], timestamp: Date.now() },
-				{ role: "user" as const, content: [{ type: "text" as const, text: `<diff>\n${diffContent}\n</diff>` }], timestamp: Date.now() },
-			];
-			if (truncated) {
-				baseMessages.push({ role: "user" as const, content: [{ type: "text" as const, text: `NOTE: The diff was truncated to ${DIFF_TRUNCATE_LIMIT} characters due to context limits.` }], timestamp: Date.now() });
-			}
+			const getToolsForRun = (runSettings: CommitMessageSettings): Tool[] => runSettings.useRepoTools ? createReadOnlyTools() : [];
 
 			if (ctx.hasUI) {
 				await ctx.ui.custom((tui, theme, _kb, done) => {
@@ -165,13 +174,22 @@ export default function (pi: ExtensionAPI) {
 					let toolActivity: string[] = [];
 					let copiedNotice = false;
 					let controller: AbortController | null = null;
-					let currentMessages = [...baseMessages];
+					let activeRunSeq = 0;
+					const clarificationHistory: string[] = [];
 					const targetLabel = chosenSubmodule ? `Submodule: ${chosenSubmodule}` : `Repository: ${path.basename(process.cwd())}`;
 					const modelLabel = formatModelRef(model);
-					const thinkingLabel = reasoningEffort ?? "off";
-					const repoToolsLabel = settings.useRepoTools ? "enabled" : "disabled";
+					const liveSettings: CommitMessageSettings = { ...settings };
 					let spinnerIdx = 0;
 					const spinner = ["-", "\\", "|", "/"];
+
+					const getEffectiveThinkingLabel = () => {
+						const effective = getReasoningEffortForModel(model, liveSettings.thinkingLevel) ?? "off";
+						if (effective === liveSettings.thinkingLevel) return effective;
+						if (!model?.reasoning) return `${liveSettings.thinkingLevel} → off (model has no reasoning)`;
+						return `${liveSettings.thinkingLevel} → ${effective}`;
+					};
+
+					const getRepoToolsLabel = () => liveSettings.useRepoTools ? "enabled" : "disabled";
 
 					const resetForRun = () => {
 						thinkingText = "";
@@ -180,23 +198,30 @@ export default function (pi: ExtensionAPI) {
 						errorMsg = "";
 						clarificationQuestion = "";
 						clarificationInput = "";
+						toolActivity = [];
 						copiedNotice = false;
 					};
 
-					const runLoop = async () => {
+					const rerunWithCurrentSettings = async (statusMessage?: string) => {
+						try { controller?.abort(); } catch (_) {}
+						resetForRun();
+						if (statusMessage && ctx.hasUI) ctx.ui.notify(statusMessage, "info");
+						const runSeq = ++activeRunSeq;
 						controller = new AbortController();
 						mode = "streaming";
+						tui.requestRender?.();
 						try {
 							const result = await runToolAwareLoop({
 								model,
-								messages: currentMessages,
-								tools,
+								messages: buildMessagesForRun(liveSettings, clarificationHistory),
+								tools: getToolsForRun(liveSettings),
 								apiKey: auth.apiKey,
 								headers: auth.headers,
-								reasoningEffort,
+								reasoningEffort: getReasoningEffortForModel(model, liveSettings.thinkingLevel),
 								signal: controller.signal,
 								workdir,
 								onEvent: (event) => {
+									if (runSeq !== activeRunSeq) return;
 									if (event.type === "thinking_delta") {
 										thinkingText += event.delta;
 									} else if (event.type === "text_delta") {
@@ -207,8 +232,7 @@ export default function (pi: ExtensionAPI) {
 									tui.requestRender?.();
 								},
 							});
-
-							currentMessages = result.messages;
+							if (runSeq !== activeRunSeq) return;
 							outputText = result.finalText || outputText;
 							thinkingSummary = summarizeThinking(thinkingText, toolActivity);
 							if (isClarificationRequest(outputText)) {
@@ -218,6 +242,7 @@ export default function (pi: ExtensionAPI) {
 								mode = "done";
 							}
 						} catch (err: any) {
+							if (runSeq !== activeRunSeq) return;
 							if (!controller?.signal.aborted) {
 								mode = "error";
 								errorMsg = String(err.message || err);
@@ -227,7 +252,7 @@ export default function (pi: ExtensionAPI) {
 						tui.requestRender?.();
 					};
 
-					runLoop();
+					rerunWithCurrentSettings();
 					const interval = setInterval(() => {
 						spinnerIdx = (spinnerIdx + 1) % spinner.length;
 						tui.requestRender?.();
@@ -244,32 +269,37 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Text(theme.fg("accent", theme.bold("Commit message preview")), 1, 0));
 
 							addSectionTitle("Context");
+							const thinkingLabel = getEffectiveThinkingLabel();
+							const repoToolsLabel = getRepoToolsLabel();
 							let headerMd = `**Target:** ${escapeMarkdown(targetLabel)}\n\n**Model:** ${escapeMarkdown(modelLabel)}\n\n**Thinking level:** ${escapeMarkdown(thinkingLabel)}\n\n**Repo tools:** ${escapeMarkdown(repoToolsLabel)}\n\n**Staged files:**\n${escapeMarkdown(stagedNames)}`;
 							if (initialClarification) headerMd += `\n\n**Initial clarification:**\n${escapeMarkdown(initialClarification)}`;
 							if (truncated) headerMd += `\n\n_Note: diff was truncated for model input._`;
 							container.addChild(new Markdown(headerMd, 1, 1, mdTheme));
 							container.addChild(new Text("", 1, 0));
 
-							if (settings.showToolActivity && toolActivity.length > 0) {
+							if (liveSettings.showToolActivity && toolActivity.length > 0) {
 								addSectionTitle("Tool activity");
 								container.addChild(new Markdown(toolActivity.map((x) => `- ${escapeMarkdown(x)}`).join("\n"), 1, 1, mdTheme));
 								container.addChild(new Text("", 1, 0));
 							}
 
-							if (settings.showThinking && mode === "streaming" && thinkingText) {
+							if (liveSettings.showThinking && mode === "streaming" && thinkingText) {
 								addSectionTitle("Thinking");
 								container.addChild(new Text(theme.fg("thinkingHigh", thinkingText), 1, 0));
 								container.addChild(new Text("", 1, 0));
-							} else if (settings.showThinkingSummary && thinkingSummary) {
+							} else if (liveSettings.showThinkingSummary && thinkingSummary) {
 								addSectionTitle("Thinking summary");
 								container.addChild(new Text(theme.fg("thinkingHigh", thinkingSummary), 1, 0));
 								container.addChild(new Text("", 1, 0));
 							}
 
+							const controlsLine = `Shift+Tab thinking: ${getEffectiveThinkingLabel()} • Ctrl+Y repo tools: ${getRepoToolsLabel()}`;
+
 							if (mode === "streaming") {
 								addSectionTitle("Current output");
 								container.addChild(new Text(theme.fg("muted", `Generating ${spinner[spinnerIdx]}`), 1, 0));
 								if (outputText) container.addChild(new Markdown(escapeMarkdown(outputText), 1, 1, mdTheme));
+								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter/Esc close"), 1, 0));
 							} else if (mode === "clarify") {
 								addSectionTitle("Clarification needed");
@@ -277,17 +307,20 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Text("", 1, 0));
 								container.addChild(new Text(theme.fg("accent", "Your clarification:"), 1, 0));
 								container.addChild(new Text(clarificationInput || theme.fg("dim", "Type here..."), 1, 0));
+								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter submit • Backspace edit • Esc cancel/close"), 1, 0));
 							} else if (mode === "error") {
 								addSectionTitle("Error");
 								container.addChild(new Text(theme.fg("error", "Model request failed:"), 1, 0));
 								container.addChild(new Text(errorMsg || "Unknown error", 1, 0));
+								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "Enter/Esc close"), 1, 0));
 							} else {
 								addSectionTitle("Generated commit message");
 								container.addChild(new Markdown(outputText ? escapeMarkdown(outputText) : "(no output)", 1, 1, mdTheme));
 								container.addChild(new Text("", 1, 0));
 								if (copiedNotice) container.addChild(new Text(theme.fg("success", "Copied to clipboard"), 1, 0));
+								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
 								container.addChild(new Text(theme.fg("dim", "c copy • Enter/Esc close"), 1, 0));
 							}
 
@@ -297,6 +330,19 @@ export default function (pi: ExtensionAPI) {
 						invalidate: () => {},
 						handleInput: async (data: string) => {
 							try {
+								if (matchesKey(data, "shift+tab")) {
+									liveSettings.thinkingLevel = cycleThinkingLevel(liveSettings.thinkingLevel);
+									await saveSettings(liveSettings);
+									await rerunWithCurrentSettings(`Thinking level: ${getEffectiveThinkingLabel()}`);
+									return;
+								}
+								if (matchesKey(data, "ctrl+y")) {
+									liveSettings.useRepoTools = !liveSettings.useRepoTools;
+									await saveSettings(liveSettings);
+									await rerunWithCurrentSettings(`Repo tools ${liveSettings.useRepoTools ? "enabled" : "disabled"}`);
+									return;
+								}
+
 								if (mode === "clarify") {
 									if (matchesKey(data, "escape") || matchesKey(data, "tui.select.cancel")) {
 										clearInterval(interval);
@@ -314,13 +360,8 @@ export default function (pi: ExtensionAPI) {
 											ctx.ui.notify("Please type a clarification or press Esc to cancel", "warning");
 											return;
 										}
-										currentMessages.push({
-											role: "user",
-											content: [{ type: "text", text: `USER CLARIFICATION:\n${clarificationInput.trim()}` }],
-											timestamp: Date.now(),
-										});
-										resetForRun();
-										await runLoop();
+										clarificationHistory.push(clarificationInput.trim());
+										await rerunWithCurrentSettings();
 										return;
 									}
 									if (typeof data === "string" && data.length === 1 && data >= " ") {
@@ -359,10 +400,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
+				const reasoningEffort = getReasoningEffortForModel(model, settings.thinkingLevel);
 				const result = await runToolAwareLoop({
 					model,
-					messages: [...baseMessages],
-					tools,
+					messages: buildMessagesForRun(settings),
+					tools: getToolsForRun(settings),
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					reasoningEffort,
@@ -528,6 +570,142 @@ function getReasoningEffortForModel(model: any, thinkingLevel: ThinkingLevelSett
 	if (!model?.reasoning) return undefined;
 	if (thinkingLevel === "off") return undefined;
 	return thinkingLevel;
+}
+
+function cycleThinkingLevel(current: ThinkingLevelSetting): ThinkingLevelSetting {
+	const idx = THINKING_LEVELS.indexOf(current);
+	if (idx < 0) return DEFAULT_SETTINGS.thinkingLevel;
+	return THINKING_LEVELS[(idx + 1) % THINKING_LEVELS.length]!;
+}
+
+function formatThinkingLevelForDisplay(model: any, thinkingLevel: ThinkingLevelSetting): string {
+	const effective = getReasoningEffortForModel(model, thinkingLevel) ?? "off";
+	if (effective === thinkingLevel) return effective;
+	if (!model?.reasoning) return `${thinkingLevel} → off (model has no reasoning)`;
+	return `${thinkingLevel} → ${effective}`;
+}
+
+async function promptForCommitTarget(ctx: any, model: any, settings: CommitMessageSettings, submodules: string[]): Promise<string | null> {
+	const items = ["(current repo)", ...submodules].map((value) => ({ value, label: value }));
+	return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: any) => {
+		const { Container, SelectList, Text, matchesKey } = require("@mariozechner/pi-tui");
+		const { DynamicBorder } = require("@mariozechner/pi-coding-agent");
+		const container = new Container();
+		const title = new Text(theme.fg("accent", theme.bold("Generate commit message for")), 1, 0);
+		const status = new Text("", 1, 0);
+		const targetSectionTitle = new Text(theme.fg("accent", theme.bold("Choose target")), 1, 0);
+		const help = new Text("", 1, 0);
+		const selectList = new SelectList(items, Math.min(items.length, 10), {
+			selectedPrefix: (t: string) => theme.fg("accent", t),
+			selectedText: (t: string) => theme.fg("accent", t),
+			description: (t: string) => theme.fg("muted", t),
+			scrollInfo: (t: string) => theme.fg("dim", t),
+			noMatch: (t: string) => theme.fg("warning", t),
+		});
+		selectList.onSelect = (item: any) => done(item.value);
+		selectList.onCancel = () => done(null);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(title);
+		container.addChild(status);
+		container.addChild(new Text("", 1, 0));
+		container.addChild(targetSectionTitle);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		container.addChild(selectList);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		container.addChild(help);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => {
+				status.setText(theme.fg("muted", `Thinking: ${formatThinkingLevelForDisplay(model, settings.thinkingLevel)} • Repo tools: ${settings.useRepoTools ? "enabled" : "disabled"}`));
+				help.setText(theme.fg("muted", "↑↓ navigate • Enter select • Shift+Tab cycle thinking • Ctrl+Y toggle repo tools • Esc cancel"));
+				return container.render(w);
+			},
+			invalidate: () => container.invalidate(),
+			handleInput: async (data: string) => {
+				if (matchesKey(data, "shift+tab")) {
+					settings.thinkingLevel = cycleThinkingLevel(settings.thinkingLevel);
+					await saveSettings(settings);
+					tui.requestRender?.();
+					return;
+				}
+				if (matchesKey(data, "ctrl+y")) {
+					settings.useRepoTools = !settings.useRepoTools;
+					await saveSettings(settings);
+					tui.requestRender?.();
+					return;
+				}
+				selectList.handleInput?.(data);
+				tui.requestRender?.();
+			},
+		};
+	});
+}
+
+async function promptForInitialClarification(ctx: any, model: any, settings: CommitMessageSettings, targetLabel: string): Promise<string | null> {
+	return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: any) => {
+		const { Container, Text, matchesKey } = require("@mariozechner/pi-tui");
+		const { DynamicBorder } = require("@mariozechner/pi-coding-agent");
+		const container = new Container();
+		let value = "";
+		const title = new Text(theme.fg("accent", theme.bold("Optional additional context")), 1, 0);
+		const status = new Text("", 1, 0);
+		const target = new Text("", 1, 0);
+		const prompt = new Text(theme.fg("accent", "Provide a brief why/reason for the change, or press Enter to skip."), 1, 0);
+		const input = new Text("", 1, 0);
+		const help = new Text("", 1, 0);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(title);
+		container.addChild(status);
+		container.addChild(target);
+		container.addChild(new Text("", 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		container.addChild(prompt);
+		container.addChild(input);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		container.addChild(help);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => {
+				status.setText(theme.fg("muted", `Thinking: ${formatThinkingLevelForDisplay(model, settings.thinkingLevel)} • Repo tools: ${settings.useRepoTools ? "enabled" : "disabled"}`));
+				target.setText(theme.fg("muted", targetLabel));
+				input.setText(value ? value : theme.fg("dim", "Type here..."));
+				help.setText(theme.fg("muted", "Enter continue • Backspace edit • Shift+Tab cycle thinking • Ctrl+Y toggle repo tools • Esc cancel"));
+				return container.render(w);
+			},
+			invalidate: () => container.invalidate(),
+			handleInput: async (data: string) => {
+				if (matchesKey(data, "shift+tab")) {
+					settings.thinkingLevel = cycleThinkingLevel(settings.thinkingLevel);
+					await saveSettings(settings);
+					tui.requestRender?.();
+					return;
+				}
+				if (matchesKey(data, "ctrl+y")) {
+					settings.useRepoTools = !settings.useRepoTools;
+					await saveSettings(settings);
+					tui.requestRender?.();
+					return;
+				}
+				if (matchesKey(data, "escape") || matchesKey(data, "tui.select.cancel")) {
+					done(null);
+					return;
+				}
+				if (matchesKey(data, "backspace") || data === "\x7f") {
+					value = value.slice(0, -1);
+					tui.requestRender?.();
+					return;
+				}
+				if (matchesKey(data, "tui.select.confirm") || data === "\n" || data === "\r") {
+					done(value.trim());
+					return;
+				}
+				if (typeof data === "string" && data.length === 1 && data >= " ") {
+					value += data;
+					tui.requestRender?.();
+				}
+			},
+		};
+	});
 }
 
 async function loadPrompt(ctx: any): Promise<string | null> {

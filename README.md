@@ -23,6 +23,10 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
   - tool activity
   - thinking / thinking summary
   - generated result
+- Runtime controls before and during generation:
+  - `Shift+Tab` cycles the thinking level and saves it
+  - `Ctrl+Y` toggles repo tools and saves it
+  - These controls are available in repo selection (when applicable), optional context entry, and the preview itself
 - Copies the final message to the clipboard
 
 ## Settings
