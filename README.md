@@ -92,7 +92,7 @@ pi install git:github.com/dimixar/pi-generate-commit-message
 After publishing to npm, install it with:
 
 ```bash
-pi install npm:<PACKAGE_NAME>
+pi install npm:pi-generate-commit-message
 ```
 
 ## Package structure

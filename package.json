@@ -9,9 +9,19 @@
     "commit-message",
     "extension"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dimixar/pi-generate-commit-message.git"
+  },
+  "homepage": "https://github.com/dimixar/pi-generate-commit-message#readme",
+  "bugs": {
+    "url": "https://github.com/dimixar/pi-generate-commit-message/issues"
+  },
+  "license": "MIT",
   "files": [
     "extensions",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
