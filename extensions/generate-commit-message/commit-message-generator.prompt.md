@@ -9,15 +9,9 @@ Guidelines merged from the project's Copilot prompt:
 - Body: Use bullets to list 1–3 important details or reasons (focus on what and why, not implementation minutiae). Wrap long lines at ~72 chars.
 - If the change is purely formatting/whitespace, prefer types like `chore` or `style` in the title (e.g., "style(formatting): normalize line endings and remove trailing whitespace").
 - If multiple unrelated changes are present, make the title describe the primary intent and list others as bullets.
-- If you cannot determine the "why" from the diff, do not ask the user immediately. First use the available read-only repository tools to inspect relevant source files and gather missing context. Only ask the user for clarification if tool-assisted inspection is still insufficient.
+- If you cannot determine the "why" from the diff, do not ask the user immediately. If repository tools are available for this run, first inspect relevant source files and gather missing context. Only ask the user for clarification if the available context is still insufficient.
 - Reference style: When mentioning files, classes, or methods in the commit message, prefer short names only. Do NOT include full filesystem paths (e.g., avoid `/Users/me/projects/foo/src/module/file.cs`); instead use the filename (`file.cs`). Likewise, avoid long fully-qualified names or deep namespaces — prefer the class or method name only (e.g., `PlayerController`, `UpdatePosition()`).
-
-Available read-only tools:
-- `find_files`: locate files by filename/path substring
-- `grep_files`: search text across files for symbols or strings
-- `read_file`: read a file or excerpt by line range
-
-Use those tools when the diff alone is ambiguous.
+- Follow the run-specific instructions provided alongside the staged diff. They define whether repository tools are enabled and whether any file reads are mandatory for this run.
 
 Input files attached by the tool (do not assume they are inline):
 

@@ -36,6 +36,7 @@ type ReasoningEffortSetting = Exclude<ThinkingLevelSetting, "off">;
 type CommitMessageSettings = {
 	model: string | null;
 	thinkingLevel: ThinkingLevelSetting;
+	useRepoTools: boolean;
 	showThinking: boolean;
 	showToolActivity: boolean;
 	showThinkingSummary: boolean;
@@ -44,6 +45,7 @@ type CommitMessageSettings = {
 const DEFAULT_SETTINGS: CommitMessageSettings = {
 	model: null,
 	thinkingLevel: "high",
+	useRepoTools: true,
 	showThinking: true,
 	showToolActivity: true,
 	showThinkingSummary: true,
@@ -97,6 +99,7 @@ export default function (pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify("No staged changes. Stage changes first.", "warning");
 				return;
 			}
+			const changedReadableFiles = settings.useRepoTools ? await getChangedReadableFiles(workdir) : [];
 
 			let initialClarification = "";
 			if (ctx.hasUI) {
@@ -127,6 +130,7 @@ export default function (pi: ExtensionAPI) {
 
 			const promptHeader = `${promptText}\n\n---\nSTAGED FILES:\n${stagedNames}\n\n---\n(Attached file: staged diff)\n`;
 			let promptFinal = promptHeader;
+			promptFinal += buildRunSpecificInstructions(settings.useRepoTools, changedReadableFiles);
 			if (initialClarification) promptFinal += `\nUSER CLARIFICATION:\n${initialClarification}\n\n`;
 
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -136,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const tools = createReadOnlyTools();
+			const tools = settings.useRepoTools ? createReadOnlyTools() : [];
 			const baseMessages = [
 				{ role: "user" as const, content: [{ type: "text" as const, text: promptFinal }], timestamp: Date.now() },
 				{ role: "user" as const, content: [{ type: "text" as const, text: `<diff>\n${diffContent}\n</diff>` }], timestamp: Date.now() },
@@ -165,6 +169,7 @@ export default function (pi: ExtensionAPI) {
 					const targetLabel = chosenSubmodule ? `Submodule: ${chosenSubmodule}` : `Repository: ${path.basename(process.cwd())}`;
 					const modelLabel = formatModelRef(model);
 					const thinkingLabel = reasoningEffort ?? "off";
+					const repoToolsLabel = settings.useRepoTools ? "enabled" : "disabled";
 					let spinnerIdx = 0;
 					const spinner = ["-", "\\", "|", "/"];
 
@@ -239,7 +244,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Text(theme.fg("accent", theme.bold("Commit message preview")), 1, 0));
 
 							addSectionTitle("Context");
-							let headerMd = `**Target:** ${escapeMarkdown(targetLabel)}\n\n**Model:** ${escapeMarkdown(modelLabel)}\n\n**Thinking level:** ${escapeMarkdown(thinkingLabel)}\n\n**Staged files:**\n${escapeMarkdown(stagedNames)}`;
+							let headerMd = `**Target:** ${escapeMarkdown(targetLabel)}\n\n**Model:** ${escapeMarkdown(modelLabel)}\n\n**Thinking level:** ${escapeMarkdown(thinkingLabel)}\n\n**Repo tools:** ${escapeMarkdown(repoToolsLabel)}\n\n**Staged files:**\n${escapeMarkdown(stagedNames)}`;
 							if (initialClarification) headerMd += `\n\n**Initial clarification:**\n${escapeMarkdown(initialClarification)}`;
 							if (truncated) headerMd += `\n\n_Note: diff was truncated for model input._`;
 							container.addChild(new Markdown(headerMd, 1, 1, mdTheme));
@@ -384,6 +389,7 @@ export default function (pi: ExtensionAPI) {
 				const choice = await ctx.ui.select("Commit message settings", [
 					`Model: ${currentModelLabel}`,
 					`Thinking level: ${settings.thinkingLevel}`,
+					`Use read/grep/find tools: ${settings.useRepoTools ? "on" : "off"}`,
 					`Show thinking: ${settings.showThinking ? "on" : "off"}`,
 					`Show tool activity: ${settings.showToolActivity ? "on" : "off"}`,
 					`Show thinking summary: ${settings.showThinkingSummary ? "on" : "off"}`,
@@ -424,6 +430,12 @@ export default function (pi: ExtensionAPI) {
 					continue;
 				}
 
+				if (choice.startsWith("Use read/grep/find tools:")) {
+					settings.useRepoTools = !settings.useRepoTools;
+					await saveSettings(settings);
+					continue;
+				}
+
 				if (choice.startsWith("Show thinking:")) {
 					settings.showThinking = !settings.showThinking;
 					await saveSettings(settings);
@@ -442,6 +454,7 @@ export default function (pi: ExtensionAPI) {
 				if (choice === "Reset to defaults") {
 					settings.model = DEFAULT_SETTINGS.model;
 					settings.thinkingLevel = DEFAULT_SETTINGS.thinkingLevel;
+					settings.useRepoTools = DEFAULT_SETTINGS.useRepoTools;
 					settings.showThinking = DEFAULT_SETTINGS.showThinking;
 					settings.showToolActivity = DEFAULT_SETTINGS.showToolActivity;
 					settings.showThinkingSummary = DEFAULT_SETTINGS.showThinkingSummary;
@@ -480,6 +493,7 @@ function normalizeSettings(settings: Partial<CommitMessageSettings> | undefined)
 	return {
 		model: typeof settings?.model === "string" && settings.model.trim() ? settings.model.trim() : null,
 		thinkingLevel,
+		useRepoTools: typeof settings?.useRepoTools === "boolean" ? settings.useRepoTools : DEFAULT_SETTINGS.useRepoTools,
 		showThinking: typeof settings?.showThinking === "boolean" ? settings.showThinking : DEFAULT_SETTINGS.showThinking,
 		showToolActivity: typeof settings?.showToolActivity === "boolean" ? settings.showToolActivity : DEFAULT_SETTINGS.showToolActivity,
 		showThinkingSummary: typeof settings?.showThinkingSummary === "boolean" ? settings.showThinkingSummary : DEFAULT_SETTINGS.showThinkingSummary,
@@ -551,6 +565,42 @@ async function isGitRepo(workdir: string): Promise<boolean> {
 async function getStagedNames(workdir: string): Promise<string> {
 	const names = await exec(`git -C "${workdir}" diff --cached --name-status || true`);
 	return String(names.stdout).trim();
+}
+
+async function getChangedReadableFiles(workdir: string): Promise<string[]> {
+	try {
+		const result = await exec(`git -C "${workdir}" diff --cached --name-only --diff-filter=ACMR || true`);
+		const files = String(result.stdout)
+			.split(/\r?\n/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		const readable: string[] = [];
+		for (const rel of files) {
+			try {
+				const abs = safeResolveFile(workdir, rel);
+				const stat = await fs.stat(abs);
+				if (!stat.isFile()) continue;
+				readable.push(rel);
+			} catch (_) {}
+		}
+		return readable;
+	} catch (_) {
+		return [];
+	}
+}
+
+function buildRunSpecificInstructions(useRepoTools: boolean, changedReadableFiles: string[]): string {
+	if (!useRepoTools) {
+		return "\nRUN SETTINGS:\n- Read-only repository tools are DISABLED for this run.\n- Do not assume tools are available.\n- Infer the commit message only from the staged diff, the optional user clarification, and any later user clarification in this session.\n\n";
+	}
+	let text = "\nRUN SETTINGS:\n- Read-only repository tools are ENABLED for this run.\n- Before producing a final commit message or asking the user for clarification, you MUST inspect the changed source files with read_file.\n";
+	if (changedReadableFiles.length > 0) {
+		text += `- Mandatory read_file targets for this run:\n${changedReadableFiles.map((file) => `  - ${file}`).join("\n")}\n`;
+		text += "- Use read_file at least once for each listed file before your first final answer or clarification question.\n\n";
+	} else {
+		text += "- No readable changed files were detected, so use tools only if you still need more context from the repository.\n\n";
+	}
+	return text;
 }
 
 function createReadOnlyTools(): Tool[] {

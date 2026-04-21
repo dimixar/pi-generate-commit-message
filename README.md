@@ -13,10 +13,11 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
 - Supports repo or submodule selection
 - Uses a configurable pi model
 - Optional reasoning/thinking level
-- Read-only repo inspection tools before asking for clarification:
+- Optional read-only repo inspection tools:
   - `find_files`
   - `grep_files`
   - `read_file`
+- When repo tools are enabled, the model is instructed to read the changed source files before producing the first result
 - Interactive preview with sections for:
   - context
   - tool activity
@@ -38,6 +39,7 @@ Default settings:
 {
   "model": null,
   "thinkingLevel": "high",
+  "useRepoTools": true,
   "showThinking": true,
   "showToolActivity": true,
   "showThinkingSummary": true
@@ -45,6 +47,8 @@ Default settings:
 ```
 
 If no model is configured, `/commit-msg` will ask you to configure one through `/commit-msg:settings`.
+
+If `useRepoTools` is enabled, the model is instructed to inspect the changed readable files with `read_file` before giving its first answer. If it is disabled, the model is expected to rely only on the staged diff and user clarifications.
 
 ## Local development
 
