@@ -38,7 +38,7 @@ Default settings:
 ```json
 {
   "model": null,
-  "thinkingLevel": "high",
+  "thinkingLevel": "medium",
   "useRepoTools": true,
   "showThinking": true,
   "showToolActivity": true,

@@ -44,7 +44,7 @@ type CommitMessageSettings = {
 
 const DEFAULT_SETTINGS: CommitMessageSettings = {
 	model: null,
-	thinkingLevel: "high",
+	thinkingLevel: "medium",
 	useRepoTools: true,
 	showThinking: true,
 	showToolActivity: true,
