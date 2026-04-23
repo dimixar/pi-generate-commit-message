@@ -112,4 +112,4 @@ extensions/
 
 ## License
 
-Choose a license before publishing publicly.
+MIT
