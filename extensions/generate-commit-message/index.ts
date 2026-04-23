@@ -130,7 +130,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const buildMessagesForRun = (runSettings: CommitMessageSettings, clarificationHistory: string[] = []) => {
-				const promptHeader = `${promptText}\n\n---\nSTAGED FILES:\n${stagedNames}\n\n---\n(Attached file: staged diff)\n`;
+				const promptHeader = `---\nSTAGED FILES:\n${stagedNames}\n\n---\n(Attached file: staged diff)\n`;
 				let promptFinal = promptHeader;
 				promptFinal += buildRunSpecificInstructions(runSettings.useRepoTools, changedReadableFiles);
 				if (initialClarification) promptFinal += `\nUSER CLARIFICATION:\n${initialClarification}\n\n`;
@@ -213,11 +213,12 @@ export default function (pi: ExtensionAPI) {
 						try {
 							const result = await runToolAwareLoop({
 								model,
+								systemPrompt: promptText,
 								messages: buildMessagesForRun(appliedRunSettings, clarificationHistory),
 								tools: getToolsForRun(appliedRunSettings),
 								apiKey: auth.apiKey,
 								headers: auth.headers,
-								reasoningEffort: getReasoningEffortForModel(model, appliedRunSettings.thinkingLevel),
+								reasoning: getReasoningEffortForModel(model, appliedRunSettings.thinkingLevel),
 								signal: controller.signal,
 								workdir,
 								onEvent: (event) => {
@@ -418,14 +419,15 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				const reasoningEffort = getReasoningEffortForModel(model, settings.thinkingLevel);
+				const reasoning = getReasoningEffortForModel(model, settings.thinkingLevel);
 				const result = await runToolAwareLoop({
 					model,
+					systemPrompt: promptText,
 					messages: buildMessagesForRun(settings),
 					tools: getToolsForRun(settings),
 					apiKey: auth.apiKey,
 					headers: auth.headers,
-					reasoningEffort,
+					reasoning,
 					workdir,
 				});
 				const sanitized = sanitizeReferences(result.finalText);
@@ -843,11 +845,12 @@ function createReadOnlyTools(): Tool[] {
 
 async function runToolAwareLoop(args: {
 	model: any;
+	systemPrompt?: string;
 	messages: any[];
 	tools: Tool[];
 	apiKey: string;
 	headers: Record<string, string> | undefined;
-	reasoningEffort?: ReasoningEffortSetting;
+	reasoning?: ReasoningEffortSetting;
 	workdir: string;
 	signal?: AbortSignal;
 	onEvent?: (event:
@@ -855,11 +858,11 @@ async function runToolAwareLoop(args: {
 		| { type: "text_delta"; delta: string }
 		| { type: "tool"; message: string }) => void;
 }): Promise<{ messages: any[]; finalText: string }> {
-	const { model, tools, apiKey, headers, reasoningEffort, workdir, signal, onEvent } = args;
+	const { model, systemPrompt, tools, apiKey, headers, reasoning, workdir, signal, onEvent } = args;
 	const messages = args.messages;
 
 	while (true) {
-		const s = stream(model, { messages, tools }, { apiKey, headers, reasoningEffort, signal });
+		const s = stream(model, { systemPrompt, messages, tools }, { apiKey, headers, reasoning, signal });
 		for await (const event of s) {
 			if (event.type === "thinking_delta") {
 				onEvent?.({ type: "thinking_delta", delta: (event as any).delta || "" });
@@ -873,9 +876,15 @@ async function runToolAwareLoop(args: {
 
 		const final = await s.result();
 		messages.push(final);
+		if (final.stopReason === "error" || final.stopReason === "aborted") {
+			throw new Error(final.errorMessage || `Model request ${final.stopReason}`);
+		}
 		const toolCalls = final.content.filter((b: any) => b.type === "toolCall");
 		if (!toolCalls.length) {
 			const finalText = final.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+			if (!finalText) {
+				throw new Error("Model returned no text output");
+			}
 			return { messages, finalText };
 		}
 
