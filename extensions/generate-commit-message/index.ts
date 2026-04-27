@@ -61,7 +61,7 @@ type ToolExecutionResult = {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("commit-msg", {
-		description: "Generate a commit message using the configured model and copy it to clipboard",
+		description: "Generate a commit message using the configured model, then copy it or commit staged changes",
 		handler: async (_args, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify("Preparing commit message generation...", "info");
 
@@ -175,6 +175,10 @@ export default function (pi: ExtensionAPI) {
 					let clarificationInput = "";
 					let toolActivity: string[] = [];
 					let copiedNotice = false;
+					let commitNotice = "";
+					let commitError = "";
+					let committing = false;
+					let committed = false;
 					let controller: AbortController | null = null;
 					let activeRunSeq = 0;
 					const clarificationHistory: string[] = [];
@@ -199,6 +203,10 @@ export default function (pi: ExtensionAPI) {
 						clarificationInput = "";
 						toolActivity = [];
 						copiedNotice = false;
+						commitNotice = "";
+						commitError = "";
+						committing = false;
+						committed = false;
 					};
 
 					const rerunWithCurrentSettings = async (statusMessage?: string) => {
@@ -330,11 +338,14 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Markdown(outputText ? escapeMarkdown(outputText) : "(no output)", 1, 1, mdTheme));
 								container.addChild(new Text("", 1, 0));
 								if (copiedNotice) container.addChild(new Text(theme.fg("success", "Copied to clipboard"), 1, 0));
+								if (committing) container.addChild(new Text(theme.fg("muted", "Committing staged changes..."), 1, 0));
+								if (commitNotice) container.addChild(new Text(theme.fg("success", commitNotice), 1, 0));
+								if (commitError) container.addChild(new Text(theme.fg("error", commitError), 1, 0));
 								if (hasPendingRunSettingsChanges()) {
 									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
 								}
 								container.addChild(new Text(theme.fg("dim", controlsLine), 1, 0));
-								container.addChild(new Text(theme.fg("dim", "c copy • Enter/Esc close"), 1, 0));
+								container.addChild(new Text(theme.fg("dim", committed ? "c copy • Enter/Esc close" : "c copy • m commit staged changes • Enter/Esc close"), 1, 0));
 							}
 
 							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -395,6 +406,28 @@ export default function (pi: ExtensionAPI) {
 									await copyToClipboard(sanitized, ctx, pi);
 									copiedNotice = true;
 									tui.requestRender?.();
+									return;
+								}
+
+								if ((data === "m" || data === "M") && mode === "done") {
+									if (committing || committed) return;
+									commitNotice = "";
+									commitError = "";
+									committing = true;
+									tui.requestRender?.();
+									try {
+										const sanitized = sanitizeReferences(outputText);
+										const commitHash = await commitStagedChanges(workdir, sanitized);
+										committed = true;
+										commitNotice = `Committed staged changes${commitHash ? ` (${commitHash})` : ""}`;
+										if (ctx.hasUI) ctx.ui.notify(commitNotice, "success");
+									} catch (err: any) {
+										commitError = "Commit failed: " + String(err.message || err);
+										if (ctx.hasUI) ctx.ui.notify(commitError, "error");
+									} finally {
+										committing = false;
+										tui.requestRender?.();
+									}
 									return;
 								}
 
@@ -1057,8 +1090,32 @@ async function safeRm(p: string) {
 	} catch (_) {}
 }
 
+async function commitStagedChanges(workdir: string, message: string): Promise<string> {
+	const cleaned = cleanCommitMessage(message);
+	if (!cleaned) throw new Error("Generated commit message is empty");
+	const stagedNames = await getStagedNames(workdir);
+	if (!stagedNames) throw new Error("No staged changes to commit");
+
+	const tmpPath = path.join(os.tmpdir(), `pi-commit-message-${Date.now()}.txt`);
+	await fs.writeFile(tmpPath, cleaned + "\n", { encoding: "utf8" });
+	try {
+		await execGit(workdir, ["commit", "-F", tmpPath]);
+		return (await execGit(workdir, ["rev-parse", "--short", "HEAD"])).trim();
+	} catch (err: any) {
+		const stderr = String(err?.stderr || "").trim();
+		const stdout = String(err?.stdout || "").trim();
+		throw new Error(stderr || stdout || String(err?.message || err));
+	} finally {
+		await safeRm(tmpPath);
+	}
+}
+
+function cleanCommitMessage(text: string): string {
+	return text.replace(/^```[a-zA-Z0-9_-]*\s*/g, "").replace(/```\s*$/g, "").trim();
+}
+
 async function copyToClipboard(text: string, ctx: any, pi: ExtensionAPI) {
-	const cleaned = text.replace(/^```[a-zA-Z0-9_-]*\s*/g, "").replace(/```\s*$/g, "").trim();
+	const cleaned = cleanCommitMessage(text);
 	const tmpPath = path.join(os.tmpdir(), `pi-commit-clipboard-${Date.now()}.md`);
 	await fs.writeFile(tmpPath, cleaned, { encoding: "utf8" });
 	const unixEscape = (p: string) => `'${p.replace(/'/g, `\\'`)}'`;

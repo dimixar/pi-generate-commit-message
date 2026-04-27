@@ -1,6 +1,6 @@
 # pi-generate-commit-message
 
-A pi extension that generates commit messages from staged `git diff --cached` changes, with an interactive TUI preview, optional clarification flow, clipboard copy, and configurable model/thinking settings.
+A pi extension that generates commit messages from staged `git diff --cached` changes, with an interactive TUI preview, optional clarification flow, clipboard copy, optional manual `git commit`, and configurable model/thinking settings.
 
 ## Commands
 
@@ -27,8 +27,11 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
   - `Shift+Tab` cycles the thinking level and saves it
   - `Ctrl+Y` toggles repo tools and saves it
   - `Ctrl+R` retries generation in the preview and applies the latest saved run settings
+  - `c` copies the final message to the clipboard
+  - `m` commits the currently staged changes with the generated message
   - These controls are available in repo selection (when applicable), optional context entry, and the preview itself
 - Copies the final message to the clipboard
+- Can manually run `git commit -F <generated-message-file>` for staged changes from the preview
 
 ## Settings
 
