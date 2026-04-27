@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-04-27
 
 ### Added
 - Add manual `m` shortcut in the preview to commit staged changes with the generated message
