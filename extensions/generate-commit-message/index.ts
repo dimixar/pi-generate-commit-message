@@ -41,6 +41,7 @@ type CommitMessageSettings = {
 	showThinking: boolean;
 	showToolActivity: boolean;
 	showThinkingSummary: boolean;
+	autoCommitSubmodulePointer: boolean;
 };
 
 const DEFAULT_SETTINGS: CommitMessageSettings = {
@@ -50,6 +51,7 @@ const DEFAULT_SETTINGS: CommitMessageSettings = {
 	showThinking: true,
 	showToolActivity: true,
 	showThinkingSummary: true,
+	autoCommitSubmodulePointer: false,
 };
 
 type ToolExecutionResult = {
@@ -179,6 +181,7 @@ export default function (pi: ExtensionAPI) {
 					let commitError = "";
 					let committing = false;
 					let committed = false;
+					let submodulePointerNotice = "";
 					let controller: AbortController | null = null;
 					let activeRunSeq = 0;
 					const clarificationHistory: string[] = [];
@@ -207,6 +210,7 @@ export default function (pi: ExtensionAPI) {
 						commitError = "";
 						committing = false;
 						committed = false;
+						submodulePointerNotice = "";
 					};
 
 					const rerunWithCurrentSettings = async (statusMessage?: string) => {
@@ -340,6 +344,7 @@ export default function (pi: ExtensionAPI) {
 								if (copiedNotice) container.addChild(new Text(theme.fg("success", "Copied to clipboard"), 1, 0));
 								if (committing) container.addChild(new Text(theme.fg("muted", "Committing staged changes..."), 1, 0));
 								if (commitNotice) container.addChild(new Text(theme.fg("success", commitNotice), 1, 0));
+								if (submodulePointerNotice) container.addChild(new Text(theme.fg("warning", submodulePointerNotice), 1, 0));
 								if (commitError) container.addChild(new Text(theme.fg("error", commitError), 1, 0));
 								if (hasPendingRunSettingsChanges()) {
 									container.addChild(new Text(theme.fg("warning", "Pending run settings changed — press Ctrl+R to retry with them"), 1, 0));
@@ -420,6 +425,18 @@ export default function (pi: ExtensionAPI) {
 										const commitHash = await commitStagedChanges(workdir, sanitized);
 										committed = true;
 										commitNotice = `Committed staged changes${commitHash ? ` (${commitHash})` : ""}`;
+										if (chosenSubmodule) {
+											if (liveSettings.autoCommitSubmodulePointer) {
+												try {
+													const pointerHash = await commitParentSubmodulePointer(process.cwd(), chosenSubmodule, sanitized);
+													submodulePointerNotice = `Committed parent submodule pointer${pointerHash ? ` (${pointerHash})` : ""}`;
+												} catch (err: any) {
+													submodulePointerNotice = `Submodule committed, but parent pointer commit failed: ${String(err.message || err)}`;
+												}
+											} else {
+												submodulePointerNotice = `Parent repo submodule pointer changed. Stage and commit ${chosenSubmodule} separately, or enable auto-commit in /commit-msg:settings.`;
+											}
+										}
 										if (ctx.hasUI) ctx.ui.notify(commitNotice, "success");
 									} catch (err: any) {
 										commitError = "Commit failed: " + String(err.message || err);
@@ -488,6 +505,7 @@ export default function (pi: ExtensionAPI) {
 					`Show thinking: ${settings.showThinking ? "on" : "off"}`,
 					`Show tool activity: ${settings.showToolActivity ? "on" : "off"}`,
 					`Show thinking summary: ${settings.showThinkingSummary ? "on" : "off"}`,
+					`Auto-commit submodule pointer: ${settings.autoCommitSubmodulePointer ? "on" : "off"}`,
 					"Reset to defaults",
 					"Close",
 				]);
@@ -546,6 +564,11 @@ export default function (pi: ExtensionAPI) {
 					await saveSettings(settings);
 					continue;
 				}
+				if (choice.startsWith("Auto-commit submodule pointer:")) {
+					settings.autoCommitSubmodulePointer = !settings.autoCommitSubmodulePointer;
+					await saveSettings(settings);
+					continue;
+				}
 				if (choice === "Reset to defaults") {
 					settings.model = DEFAULT_SETTINGS.model;
 					settings.thinkingLevel = DEFAULT_SETTINGS.thinkingLevel;
@@ -553,6 +576,7 @@ export default function (pi: ExtensionAPI) {
 					settings.showThinking = DEFAULT_SETTINGS.showThinking;
 					settings.showToolActivity = DEFAULT_SETTINGS.showToolActivity;
 					settings.showThinkingSummary = DEFAULT_SETTINGS.showThinkingSummary;
+					settings.autoCommitSubmodulePointer = DEFAULT_SETTINGS.autoCommitSubmodulePointer;
 					await saveSettings(settings);
 					ctx.ui.notify("Commit message settings reset", "info");
 				}
@@ -592,6 +616,7 @@ function normalizeSettings(settings: Partial<CommitMessageSettings> | undefined)
 		showThinking: typeof settings?.showThinking === "boolean" ? settings.showThinking : DEFAULT_SETTINGS.showThinking,
 		showToolActivity: typeof settings?.showToolActivity === "boolean" ? settings.showToolActivity : DEFAULT_SETTINGS.showToolActivity,
 		showThinkingSummary: typeof settings?.showThinkingSummary === "boolean" ? settings.showThinkingSummary : DEFAULT_SETTINGS.showThinkingSummary,
+		autoCommitSubmodulePointer: typeof settings?.autoCommitSubmodulePointer === "boolean" ? settings.autoCommitSubmodulePointer : DEFAULT_SETTINGS.autoCommitSubmodulePointer,
 	};
 }
 
@@ -1090,6 +1115,32 @@ async function safeRm(p: string) {
 	} catch (_) {}
 }
 
+async function commitParentSubmodulePointer(parentWorkdir: string, submodulePath: string, submoduleCommitMessage: string): Promise<string> {
+	const submoduleSummary = summarizeCommitMessage(submoduleCommitMessage);
+	const tmpPath = path.join(os.tmpdir(), `pi-parent-submodule-commit-${Date.now()}.txt`);
+	const parentMessage = [
+		`Update ${submodulePath} submodule pointer`,
+		"",
+		"Submodule commit summary:",
+		"",
+		submoduleSummary,
+	].join("\n").trim() + "\n";
+	await fs.writeFile(tmpPath, parentMessage, { encoding: "utf8" });
+	try {
+		await execGit(parentWorkdir, ["add", "--", submodulePath]);
+		const staged = (await execGit(parentWorkdir, ["diff", "--cached", "--name-only", "--", submodulePath])).trim();
+		if (!staged) throw new Error(`No parent submodule pointer change found for ${submodulePath}`);
+		await execGit(parentWorkdir, ["commit", "-F", tmpPath, "--", submodulePath]);
+		return (await execGit(parentWorkdir, ["rev-parse", "--short", "HEAD"])).trim();
+	} catch (err: any) {
+		const stderr = String(err?.stderr || "").trim();
+		const stdout = String(err?.stdout || "").trim();
+		throw new Error(stderr || stdout || String(err?.message || err));
+	} finally {
+		await safeRm(tmpPath);
+	}
+}
+
 async function commitStagedChanges(workdir: string, message: string): Promise<string> {
 	const cleaned = cleanCommitMessage(message);
 	if (!cleaned) throw new Error("Generated commit message is empty");
@@ -1112,6 +1163,15 @@ async function commitStagedChanges(workdir: string, message: string): Promise<st
 
 function cleanCommitMessage(text: string): string {
 	return text.replace(/^```[a-zA-Z0-9_-]*\s*/g, "").replace(/```\s*$/g, "").trim();
+}
+
+function summarizeCommitMessage(text: string): string {
+	const cleaned = cleanCommitMessage(text);
+	const lines = cleaned
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	return lines[0] || cleaned;
 }
 
 async function copyToClipboard(text: string, ctx: any, pi: ExtensionAPI) {

@@ -32,6 +32,7 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
   - These controls are available in repo selection (when applicable), optional context entry, and the preview itself
 - Copies the final message to the clipboard
 - Can manually run `git commit -F <generated-message-file>` for staged changes from the preview
+- For submodule commits, can optionally auto-commit the updated submodule pointer in the parent repo with a fixed subject and a summary of the generated submodule commit message in the body
 
 ## Settings
 
@@ -50,13 +51,16 @@ Default settings:
   "useRepoTools": true,
   "showThinking": true,
   "showToolActivity": true,
-  "showThinkingSummary": true
+  "showThinkingSummary": true,
+  "autoCommitSubmodulePointer": false
 }
 ```
 
 If no model is configured, `/commit-msg` will ask you to configure one through `/commit-msg:settings`.
 
 If `useRepoTools` is enabled, the model is instructed to inspect the changed readable files with `read_file` before giving its first answer. If it is disabled, the model is expected to rely only on the staged diff and user clarifications.
+
+If `autoCommitSubmodulePointer` is enabled, pressing `m` after generating a submodule commit message commits the submodule first, then stages and commits the updated submodule pointer in the parent repo. The parent commit uses `Update <submodule> submodule pointer` as the subject and includes a one-line summary of the generated submodule commit message in the body. If disabled, the preview reminds you to stage and commit the parent pointer separately.
 
 ## Local development
 

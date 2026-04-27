@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-04-27
+
+### Added
+- Add an optional setting to auto-commit updated parent submodule pointers after submodule commits with a generated-message summary in the parent commit body
+- Show a reminder after submodule commits when parent pointer auto-commit is disabled
+
 ## 0.2.0 - 2026-04-27
 
 ### Added
