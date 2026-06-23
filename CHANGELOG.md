@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 - 2026-06-23
+
+### Fixed
+- Update extension imports for the latest `@earendil-works` pi packages
+- Rename commands to `/commit_msg` and `/commit_msg:settings` for current pi command parsing
+- Use current pi-ai auth and streaming options, including OAuth/env-backed auth
+- Replace removed TUI helpers with local rendering helpers
+
 ## 0.2.1 - 2026-04-27
 
 ### Added

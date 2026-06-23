@@ -1,6 +1,6 @@
 {
   "name": "pi-generate-commit-message",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi extension for generating commit messages from staged diffs",
   "keywords": [
     "pi-package",
@@ -29,10 +29,9 @@
       "./extensions"
     ]
   },
-  "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
-    "@sinclair/typebox": "*"
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.79.10",
+    "@earendil-works/pi-coding-agent": "^0.79.10",
+    "@earendil-works/pi-tui": "^0.79.10"
   }
 }

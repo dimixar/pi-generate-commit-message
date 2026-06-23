@@ -1,6 +1,5 @@
-import { stream, validateToolCall, type Tool } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { streamSimple, Type, validateToolCall, type Tool } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -62,7 +61,7 @@ type ToolExecutionResult = {
 };
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("commit-msg", {
+	pi.registerCommand("commit_msg", {
 		description: "Generate a commit message using the configured model, then copy it or commit staged changes",
 		handler: async (_args, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify("Preparing commit message generation...", "info");
@@ -71,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 			const model = resolveConfiguredModel(ctx, settings);
 			if (!model) {
 				if (ctx.hasUI) {
-					ctx.ui.notify("No model configured. Run /commit-msg:settings and choose a model.", "warning");
+					ctx.ui.notify("No model configured. Run /commit_msg:settings and choose a model.", "warning");
 				}
 				return;
 			}
@@ -154,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth?.ok || !auth.apiKey) {
+			if (!auth?.ok) {
 				if (ctx.hasUI) ctx.ui.notify(String(auth?.error || "No model auth"), "warning");
 				await safeRm(tmpdir);
 				return;
@@ -164,9 +163,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (ctx.hasUI) {
 				await ctx.ui.custom((tui, theme, _kb, done) => {
-					const { Container, Markdown, Text, matchesKey } = require("@mariozechner/pi-tui");
-					const { DynamicBorder, getMarkdownTheme } = require("@mariozechner/pi-coding-agent");
-					const mdTheme = getMarkdownTheme();
+					const { Container, Markdown, Text, matchesKey } = require("@earendil-works/pi-tui");
+					const mdTheme = createMarkdownTheme(theme);
 
 					let mode: PreviewMode = "streaming";
 					let thinkingText = "";
@@ -230,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 								tools: getToolsForRun(appliedRunSettings),
 								apiKey: auth.apiKey,
 								headers: auth.headers,
+								env: auth.env,
 								reasoning: getReasoningEffortForModel(model, appliedRunSettings.thinkingLevel),
 								signal: controller.signal,
 								workdir,
@@ -278,7 +277,7 @@ export default function (pi: ExtensionAPI) {
 								const line = `── ${title} ${"─".repeat(Math.max(0, width - title.length - 8))}`;
 								container.addChild(new Text(theme.fg("borderMuted", line), 1, 0));
 							};
-							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+							container.addChild(new Text(theme.fg("accent", "─".repeat(Math.max(0, width))), 0, 0));
 							container.addChild(new Text(theme.fg("accent", theme.bold("Commit message preview")), 1, 0));
 
 							addSectionTitle("Context");
@@ -353,7 +352,7 @@ export default function (pi: ExtensionAPI) {
 								container.addChild(new Text(theme.fg("dim", committed ? "c copy • Enter/Esc close" : "c copy • m commit staged changes • Enter/Esc close"), 1, 0));
 							}
 
-							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+							container.addChild(new Text(theme.fg("accent", "─".repeat(Math.max(0, width))), 0, 0));
 							return container.render(width);
 						},
 						invalidate: () => {},
@@ -434,7 +433,7 @@ export default function (pi: ExtensionAPI) {
 													submodulePointerNotice = `Submodule committed, but parent pointer commit failed: ${String(err.message || err)}`;
 												}
 											} else {
-												submodulePointerNotice = `Parent repo submodule pointer changed. Stage and commit ${chosenSubmodule} separately, or enable auto-commit in /commit-msg:settings.`;
+												submodulePointerNotice = `Parent repo submodule pointer changed. Stage and commit ${chosenSubmodule} separately, or enable auto-commit in /commit_msg:settings.`;
 											}
 										}
 										if (ctx.hasUI) ctx.ui.notify(commitNotice, "success");
@@ -477,6 +476,7 @@ export default function (pi: ExtensionAPI) {
 					tools: getToolsForRun(settings),
 					apiKey: auth.apiKey,
 					headers: auth.headers,
+					env: auth.env,
 					reasoning,
 					workdir,
 				});
@@ -490,8 +490,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("commit-msg:settings", {
-		description: "Configure model and preview settings for /commit-msg",
+	pi.registerCommand("commit_msg:settings", {
+		description: "Configure model and preview settings for /commit_msg",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 
@@ -585,6 +585,25 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
+function createMarkdownTheme(theme: any) {
+	return {
+		heading: (text: string) => theme.fg("accent", theme.bold(text)),
+		link: (text: string) => theme.fg("accent", text),
+		linkUrl: (text: string) => theme.fg("dim", text),
+		code: (text: string) => theme.fg("warning", text),
+		codeBlock: (text: string) => text,
+		codeBlockBorder: (text: string) => theme.fg("borderMuted", text),
+		quote: (text: string) => theme.fg("muted", text),
+		quoteBorder: (text: string) => theme.fg("borderMuted", text),
+		hr: (text: string) => theme.fg("borderMuted", text),
+		listBullet: (text: string) => theme.fg("accent", text),
+		bold: (text: string) => theme.bold(text),
+		italic: (text: string) => theme.italic ? theme.italic(text) : text,
+		strikethrough: (text: string) => text,
+		underline: (text: string) => text,
+	};
+}
+
 async function loadSettings(): Promise<CommitMessageSettings> {
 	try {
 		const raw = String(await fs.readFile(SETTINGS_PATH, { encoding: "utf8" }));
@@ -666,8 +685,11 @@ function formatThinkingLevelForDisplay(model: any, thinkingLevel: ThinkingLevelS
 async function promptForCommitTarget(ctx: any, model: any, settings: CommitMessageSettings, submodules: string[]): Promise<string | null> {
 	const items = ["(current repo)", ...submodules].map((value) => ({ value, label: value }));
 	return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: any) => {
-		const { Container, SelectList, Text, matchesKey } = require("@mariozechner/pi-tui");
-		const { DynamicBorder } = require("@mariozechner/pi-coding-agent");
+		const { Container, SelectList, Text, matchesKey } = require("@earendil-works/pi-tui");
+		const addBorder = (container: any, color: string) => container.addChild({
+			render: (width: number) => [theme.fg(color, "─".repeat(Math.max(0, width)))],
+			invalidate: () => {},
+		});
 		const container = new Container();
 		const title = new Text(theme.fg("accent", theme.bold("Generate commit message for")), 1, 0);
 		const status = new Text("", 1, 0);
@@ -682,16 +704,16 @@ async function promptForCommitTarget(ctx: any, model: any, settings: CommitMessa
 		});
 		selectList.onSelect = (item: any) => done(item.value);
 		selectList.onCancel = () => done(null);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		addBorder(container, "accent");
 		container.addChild(title);
 		container.addChild(status);
 		container.addChild(new Text("", 1, 0));
 		container.addChild(targetSectionTitle);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		addBorder(container, "borderMuted");
 		container.addChild(selectList);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		addBorder(container, "borderMuted");
 		container.addChild(help);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		addBorder(container, "accent");
 		return {
 			render: (w: number) => {
 				status.setText(theme.fg("muted", `Thinking: ${formatThinkingLevelForDisplay(model, settings.thinkingLevel)} • Repo tools: ${settings.useRepoTools ? "enabled" : "disabled"}`));
@@ -721,8 +743,11 @@ async function promptForCommitTarget(ctx: any, model: any, settings: CommitMessa
 
 async function promptForInitialClarification(ctx: any, model: any, settings: CommitMessageSettings, targetLabel: string): Promise<string | null> {
 	return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: any) => {
-		const { Container, Text, matchesKey } = require("@mariozechner/pi-tui");
-		const { DynamicBorder } = require("@mariozechner/pi-coding-agent");
+		const { Container, Text, matchesKey } = require("@earendil-works/pi-tui");
+		const addBorder = (container: any, color: string) => container.addChild({
+			render: (width: number) => [theme.fg(color, "─".repeat(Math.max(0, width)))],
+			invalidate: () => {},
+		});
 		const container = new Container();
 		let value = "";
 		const title = new Text(theme.fg("accent", theme.bold("Optional additional context")), 1, 0);
@@ -731,17 +756,17 @@ async function promptForInitialClarification(ctx: any, model: any, settings: Com
 		const prompt = new Text(theme.fg("accent", "Provide a brief why/reason for the change, or press Enter to skip."), 1, 0);
 		const input = new Text("", 1, 0);
 		const help = new Text("", 1, 0);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		addBorder(container, "accent");
 		container.addChild(title);
 		container.addChild(status);
 		container.addChild(target);
 		container.addChild(new Text("", 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		addBorder(container, "borderMuted");
 		container.addChild(prompt);
 		container.addChild(input);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+		addBorder(container, "borderMuted");
 		container.addChild(help);
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		addBorder(container, "accent");
 		return {
 			render: (w: number) => {
 				status.setText(theme.fg("muted", `Thinking: ${formatThinkingLevelForDisplay(model, settings.thinkingLevel)} • Repo tools: ${settings.useRepoTools ? "enabled" : "disabled"}`));
@@ -906,8 +931,9 @@ async function runToolAwareLoop(args: {
 	systemPrompt?: string;
 	messages: any[];
 	tools: Tool[];
-	apiKey: string;
+	apiKey?: string;
 	headers: Record<string, string> | undefined;
+	env?: Record<string, string>;
 	reasoning?: ReasoningEffortSetting;
 	workdir: string;
 	signal?: AbortSignal;
@@ -916,11 +942,11 @@ async function runToolAwareLoop(args: {
 		| { type: "text_delta"; delta: string }
 		| { type: "tool"; message: string }) => void;
 }): Promise<{ messages: any[]; finalText: string }> {
-	const { model, systemPrompt, tools, apiKey, headers, reasoning, workdir, signal, onEvent } = args;
+	const { model, systemPrompt, tools, apiKey, headers, env, reasoning, workdir, signal, onEvent } = args;
 	const messages = args.messages;
 
 	while (true) {
-		const s = stream(model, { systemPrompt, messages, tools }, { apiKey, headers, reasoning, signal });
+		const s = streamSimple(model, { systemPrompt, messages, tools }, { apiKey, headers, env, reasoning, signal });
 		for await (const event of s) {
 			if (event.type === "thinking_delta") {
 				onEvent?.({ type: "thinking_delta", delta: (event as any).delta || "" });

@@ -4,8 +4,10 @@ A pi extension that generates commit messages from staged `git diff --cached` ch
 
 ## Commands
 
-- `/commit-msg`
-- `/commit-msg:settings`
+- `/commit_msg`
+- `/commit_msg:settings`
+
+Note: current pi command parsing uses underscores for extension command names; older `/commit-msg` docs are superseded.
 
 ## Features
 
@@ -56,7 +58,7 @@ Default settings:
 }
 ```
 
-If no model is configured, `/commit-msg` will ask you to configure one through `/commit-msg:settings`.
+If no model is configured, `/commit_msg` will ask you to configure one through `/commit_msg:settings`.
 
 If `useRepoTools` is enabled, the model is instructed to inspect the changed readable files with `read_file` before giving its first answer. If it is disabled, the model is expected to rely only on the staged diff and user clarifications.
 
