@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 - 2026-10-02
+
+### Fixed
+- Declare host-provided pi packages as wildcard peer dependencies to prevent Pi's extension package warning and duplicate runtime installations
+
 ## 0.2.2 - 2026-06-23
 
 ### Fixed
